@@ -2,6 +2,7 @@ import re
 from app.db.database import SessionLocal
 from app.db.models import Ban
 import subprocess
+import ipaddress
 
 def get_bans():
     bans = set()
@@ -34,14 +35,19 @@ def save_ban(ip: str):
 
 def unban_ip(ip: str):
     try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return {"error": "Invalid IP"}
+    try:
         result = subprocess.run(
-            ["fail2ban-client", "set", "sshd", "unbanip", ip],
+            ["sudo","fail2ban-client", "set", "sshd", "unbanip", ip],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=5
         )
 
         if result.returncode != 0:
-            return {"error": result.stderr}
+            return {"error": result.stderr or result.stdout or "fail2ban error"}
         
         return {"status": "unbanned", "ip": ip}
     
