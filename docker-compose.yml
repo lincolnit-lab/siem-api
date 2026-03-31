@@ -11,6 +11,7 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/siem
     volumes:
       - .:/app
+      - /var/log/fail2ban.log:/var/log/fail2ban.log:ro
 
   db:
     image: postgres:15
