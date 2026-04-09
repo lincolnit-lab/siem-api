@@ -5,7 +5,7 @@ from app.db.models import Ban
 from sqlalchemy.orm import Session
 
 
-router = APIRouter()
+router = APIRouter(prefix="/bans")
 
 
 def get_db():
@@ -15,7 +15,7 @@ def get_db():
     finally:
         db.close()
 
-@router.get("/bans")
+@router.get("/")
 def bans():
     return get_bans()
 
@@ -24,7 +24,7 @@ def unban(ip: str):
     return unban_ip(ip)
 
 
-@router.get("/bans/active")
+@router.get("/active")
 def get_active_bans(db: Session = Depends(get_db)):
     return db.query(Ban).filter(Ban.status == "banned").all()
 
