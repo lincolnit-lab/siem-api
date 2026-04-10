@@ -2,8 +2,8 @@ import re
 import ipaddress
 import subprocess
 from datetime import datetime, timezone
-
-from app.db.database import SessionLocal
+from sqlalchemy.future import select
+from app.db.database import AsyncSession
 from app.db.models import Ban
 import asyncio
 from bot.telegram_bot import notify  # асинхронная функция для Telegram
@@ -36,24 +36,28 @@ async def save_ban(ip: str):
     Сохраняет бан в БД, если его ещё нет.
     Отправляет уведомление в Telegram.
     """
-    db = SessionLocal()
-    try:
-        existing = db.query(Ban).filter(
-            Ban.ip == ip,
-            Ban.status == "banned"
-        ).first()
-        if existing:
-            return
+    async with AsyncSession() as db:
 
-        ban = Ban(ip=ip)
-        db.add(ban)
-        db.commit()
+        try:
+            result = await db.execute(
+                select(Ban).filter(Ban.ip == ip, Ban.status == "banned")
+            )
+            existing = result.scalars().first()
 
-        # --- уведомление в Telegram ---
-        await notify(f"⚠ Новый бан: {ip}")
+            if existing:
+                return
+            
 
-    finally:
-        db.close()
+            new_ban = Ban(ip=ip)
+            db.add(new_ban)
+            await db.commit()
+
+            # --- уведомление в Telegram ---
+            await notify(f"⚠ Новый бан: {ip}")
+
+        except Exception as e:
+            await db.rollback()
+            print("DB Error:", e)
 
 
 async def unban_ip(ip: str):
@@ -65,33 +69,34 @@ async def unban_ip(ip: str):
     except ValueError:
         return {"error": "Invalid IP"}
 
-    db = SessionLocal()
-    try:
-        ban = db.query(Ban).filter(
-            Ban.ip == ip,
-            Ban.status == "banned"
-        ).first()
-        if not ban:
-            return {"error": "IP not found or already unbanned"}
+    async with AsyncSession() as db:
 
-        result = subprocess.run(
-            ["sudo", "fail2ban-client", "set", "sshd", "unbanip", ip],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        try:
+            result = await db.execute(
+                select(Ban).filter(Ban.ip == ip, Ban.status == "banned")
+            )
+            ban = result.scalars().first()
 
-        if result.returncode != 0:
-            return {"error": result.stderr or result.stdout or "fail2ban error"}
+            if not ban:
+                return {"error": "IP not found or already unbanned"}
 
-        ban.status = "unbanned"
-        ban.unbanned_at = datetime.now(timezone.utc)
-        db.commit()
-        return {"status": "unbanned", "ip": ip}
+            result = subprocess.run(
+                ["sudo", "fail2ban-client", "set", "sshd", "unbanip", ip],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-    except Exception as e:
-        db.rollback()
-        return {"error": str(e)}
+            if result.returncode != 0:
+                return {"error": result.stderr or result.stdout or "fail2ban error"}
 
-    finally:
-        db.close()
+            ban.status = "unbanned"
+            ban.unbanned_at = datetime.now(timezone.utc)
+
+            await db.commit()
+            return {"status": "unbanned", "ip": ip}
+
+        except Exception as e:
+            await db.rollback()
+            return {"error": str(e)}
+
