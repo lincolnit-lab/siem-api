@@ -11,7 +11,7 @@ from bot.telegram_bot import start_telegram_bot
 async def lifespan(app: FastAPI):
     # Создание таблиц базы данных
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadate.create_all)
+        await conn.run_sync(Base.metadata.create_all)
 
     # Запуск Telegram-бота
     
