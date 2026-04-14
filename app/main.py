@@ -1,11 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from app.db.database import engine, Base
 from contextlib import asynccontextmanager
-from app.api import bans
+from app.api import bans, auth
 import uvicorn
 from app.services.fail2ban import get_bans
 import asyncio
 from bot.telegram_bot import start_telegram_bot
+from app.api.auth import get_current_user
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,7 +35,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SIEM API", lifespan=lifespan)
 
 # Подключение роутеров
-app.include_router(bans.router, prefix="/api")
+
+app.include_router(auth.router, prefix="/api")
+
+
+
+app.include_router(bans.router, prefix="/api", dependencies=[Depends(get_current_user)])
 
 @app.get("/ping")
 async def ping():

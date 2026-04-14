@@ -3,12 +3,13 @@ import ipaddress
 import subprocess
 from datetime import datetime, timezone
 from sqlalchemy.future import select
-from app.db.database import AsyncSession
+from app.db.database import AsyncSessionLocal
 from app.db.models import Ban
-import asyncio
+from dotenv import load_dotenv
+import os
 from bot.telegram_bot import notify  # асинхронная функция для Telegram
 
-LOG_FILE = "/var/log/fail2ban.log"
+LOG_FILE = os.getenv("LOG_FILE_FAIL2BAN")
 
 async def get_bans():
     """
@@ -36,11 +37,11 @@ async def save_ban(ip: str):
     Сохраняет бан в БД, если его ещё нет.
     Отправляет уведомление в Telegram.
     """
-    async with AsyncSession() as db:
+    async with AsyncSessionLocal() as db:
 
         try:
             result = await db.execute(
-                select(Ban).filter(Ban.ip == ip, Ban.status == "banned")
+                select(Ban).filter(Ban.ip == ip)
             )
             existing = result.scalars().first()
 
@@ -69,7 +70,7 @@ async def unban_ip(ip: str):
     except ValueError:
         return {"error": "Invalid IP"}
 
-    async with AsyncSession() as db:
+    async with AsyncSessionLocal() as db:
 
         try:
             result = await db.execute(
