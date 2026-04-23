@@ -11,54 +11,36 @@ from bot.telegram_bot import notify  # асинхронная функция д�
 
 LOG_FILE = os.getenv("LOG_FILE_FAIL2BAN")
 
-async def get_bans():
-    """
-    Считывает новые баны из fail2ban.log и сохраняет их в базу.
-    Для каждого нового бана отправляет уведомление в Telegram.
-    """
-    bans = set()
-    try:
-        with open(LOG_FILE) as f:
-            for line in f:
-                if "Ban" in line:
-                    ip_match = re.search(r"Ban (\d+\.\d+\.\d+\.\d+)", line)
-                    if ip_match:
-                        ip = ip_match.group(1)
-                        bans.add(ip)
-                        await save_ban(ip)
-    except Exception as e:
-        print("Fail2ban error:", e)
-
-    return {"banned_ips": list(bans)}
-
-
-async def save_ban(ip: str):
-    """
-    Сохраняет бан в БД, если его ещё нет.
-    Отправляет уведомление в Telegram.
-    """
-    async with AsyncSessionLocal() as db:
+async def process_fail2ban_event(ip: str, action: str):
+    async with AsyncSessionLocal() as db: #connect
 
         try:
-            result = await db.execute(
-                select(Ban).filter(Ban.ip == ip)
-            )
-            existing = result.scalars().first()
+            #SEARCH Ban on DB
+            result = await db.execute(select(Ban).filter(Ban.ip == ip))
+            record = result.scalars().first()
 
-            if existing:
-                return
-            
+            new_status = "banned" if action == "Ban" else "unbanned"
 
-            new_ban = Ban(ip=ip)
-            db.add(new_ban)
-            await db.commit()
+            if not record:
+                if action == "Unban": return 
 
-            # --- уведомление в Telegram ---
-            await notify(f"⚠ Новый бан: {ip}")
+                record = Ban(ip=ip, status=new_status)
+                db.add(record)
+                await db.commit()
+                await notify(f"Warning: Ip {ip} block")
+
+            else:
+                if record.status != new_status:
+                    record.status = new_status
+
+                    await db.commit()
+
+                    msg= f"IP {ip} y blocked" if action == "Ban" else f"IP {ip} unblock"
+                    await notify(msg)
 
         except Exception as e:
             await db.rollback()
-            print("DB Error:", e)
+            print(f"Error {ip}: {e}")
 
 
 async def unban_ip(ip: str):
