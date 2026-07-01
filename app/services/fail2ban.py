@@ -16,34 +16,65 @@ PIPE_FILE = "/var/log/siem_unban.pipe"
 
 async def watch_log_file():
     """
-    Асинхронный воркер (аналог tail -f). 
-    Непрерывно читает только новые строки лога.
+    Асинхронный воркер с защитой от ротации (Log Rotation Immune).
+    При старте прыгает в конец, при ротации — читает новый файл с самого начала (0).
     """
-    print(f"[*] Запущен мониторинг лога: {LOG_FILE}")
+    print(f"[*] Запущен защищенный мониторинг лога: {LOG_FILE}")
     
-    try:
-        async with aiofiles.open(LOG_FILE, mode='r', encoding='utf-8', errors='ignore') as f:
-            # Сразу перемещаем указатель в конец файла, чтобы не читать терабайты старой истории
-            await f.seek(0, os.SEEK_END)
-            
-            while True:
-                line = await f.readline()
-                if not line:
-                    # Если новых записей нет — плавно ждем полсекунды
-                    await asyncio.sleep(0.5)
-                    continue
-                
-                if "Ban" in line:
-                    ip_match = re.search(r"Ban (\d+\.\d+\.\d+\.\d+)", line)
-                    if ip_match:
-                        ip = ip_match.group(1)
-                        print(f"[!] Обнаружен новый бан в логе: {ip}")
-                        await save_ban(ip)
-                        
-    except Exception as e:
-        print(f"[-] Ошибка воркера fail2ban: {e}")
-        await asyncio.sleep(5)
+    # Флаг первого запуска системы
+    first_run = True
+    
+    while True:
+        try:
+            if not os.path.exists(LOG_FILE):
+                print(f"[-] Предупреждение: Файл {LOG_FILE} не найден. Ожидание появления...")
+                await asyncio.sleep(5)
+                continue
 
+            current_inode = os.stat(LOG_FILE).st_ino
+            
+            async with aiofiles.open(LOG_FILE, mode='r', encoding='utf-8', errors='ignore') as f:
+                
+                if first_run:
+                    # ТОЛЬКО ПРИ ПЕРВОМ СТАРТЕ: игнорируем терабайты старой истории
+                    await f.seek(0, os.SEEK_END)
+                    print(f"[+] Холодный старт. Курсор смещен в конец файла. Inode: {current_inode}")
+                    first_run = False  # Сбрасываем флаг навсегда
+                else:
+                    # ПРИ РОТАЦИИ: читаем новый файл с самого первого байта (0), не теряя ни единой строки!
+                    print(f"[+] Обнаружен новый лог после ротации. Читаем с позиции 0. Inode: {current_inode}")
+                
+                rotation_detected = False
+                
+                while not rotation_detected:
+                    line = await f.readline()
+                    
+                    if not line:
+                        await asyncio.sleep(1)
+                        
+                        try:
+                            if os.path.exists(LOG_FILE):
+                                disk_inode = os.stat(LOG_FILE).st_ino
+                                if disk_inode != current_inode:
+                                    print(f"[!] ВНИМАНИЕ: Обнаружена ротация! Старый inode: {current_inode}, Новый: {disk_inode}")
+                                    rotation_detected = True
+                        except Exception as stat_err:
+                            print(f"[-] Ошибка проверки статуса файла при ротации: {stat_err}")
+                        
+                        continue
+                    
+                    if "Ban" in line:
+                        ip_match = re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", line)
+                        if ip_match:
+                            ip = ip_match.group(0)
+                            print(f"[!] Обнаружен новый бан в логе: {ip}")
+                            await save_ban(ip)
+                            
+        except Exception as e:
+            print(f"[-] Критическая ошибка воркера fail2ban: {e}. Перезапуск через 5 секунд...")
+            await asyncio.sleep(5)
+
+            
 async def save_ban(ip: str):
     """Сохраняет бан в БД (если уникальный) и отправляет алерт"""
     async with AsyncSessionLocal() as db:
