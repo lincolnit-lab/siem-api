@@ -8,10 +8,11 @@ services:
       - db
       - redis
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/siem
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/siem
     volumes:
       - .:/app
       - /var/log/fail2ban.log:/var/log/fail2ban.log:ro
+      - /var/log/siem_unban.pipe:/var/log/siem_unban.pipe
 
   db:
     image: postgres:15

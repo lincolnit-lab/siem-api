@@ -17,4 +17,9 @@ uvicorn==0.42.0
 aiosqlite
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==4.3.0
 python-multipart
+python-dotenv
+asyncpg
+python-telegram-bot
+aiofiles>=23.0.0

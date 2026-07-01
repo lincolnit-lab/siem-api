@@ -1,6 +1,8 @@
 import re
 import ipaddress
 import subprocess
+import asyncio
+import aiofiles
 from datetime import datetime, timezone
 from sqlalchemy.future import select
 from app.db.database import AsyncSessionLocal
@@ -10,94 +12,95 @@ import os
 from bot.telegram_bot import notify  # асинхронная функция для Telegram
 
 LOG_FILE = os.getenv("LOG_FILE_FAIL2BAN")
+PIPE_FILE = "/var/log/siem_unban.pipe"
 
-async def get_bans():
+async def watch_log_file():
     """
-    Считывает новые баны из fail2ban.log и сохраняет их в базу.
-    Для каждого нового бана отправляет уведомление в Telegram.
+    Асинхронный воркер (аналог tail -f). 
+    Непрерывно читает только новые строки лога.
     """
-    bans = set()
+    print(f"[*] Запущен мониторинг лога: {LOG_FILE}")
+    
     try:
-        with open(LOG_FILE) as f:
-            for line in f:
+        async with aiofiles.open(LOG_FILE, mode='r', encoding='utf-8', errors='ignore') as f:
+            # Сразу перемещаем указатель в конец файла, чтобы не читать терабайты старой истории
+            await f.seek(0, os.SEEK_END)
+            
+            while True:
+                line = await f.readline()
+                if not line:
+                    # Если новых записей нет — плавно ждем полсекунды
+                    await asyncio.sleep(0.5)
+                    continue
+                
                 if "Ban" in line:
                     ip_match = re.search(r"Ban (\d+\.\d+\.\d+\.\d+)", line)
                     if ip_match:
                         ip = ip_match.group(1)
-                        bans.add(ip)
+                        print(f"[!] Обнаружен новый бан в логе: {ip}")
                         await save_ban(ip)
+                        
     except Exception as e:
-        print("Fail2ban error:", e)
-
-    return {"banned_ips": list(bans)}
-
+        print(f"[-] Ошибка воркера fail2ban: {e}")
+        await asyncio.sleep(5)
 
 async def save_ban(ip: str):
-    """
-    Сохраняет бан в БД, если его ещё нет.
-    Отправляет уведомление в Telegram.
-    """
+    """Сохраняет бан в БД (если уникальный) и отправляет алерт"""
     async with AsyncSessionLocal() as db:
-
         try:
-            result = await db.execute(
-                select(Ban).filter(Ban.ip == ip)
-            )
+            result = await db.execute(select(Ban).filter(Ban.ip == ip))
             existing = result.scalars().first()
 
             if existing:
                 return
-            
 
-            new_ban = Ban(ip=ip)
+            new_ban = Ban(ip=ip, status="banned")
             db.add(new_ban)
             await db.commit()
 
-            # --- уведомление в Telegram ---
-            await notify(f"⚠ Новый бан: {ip}")
-
+            # Мгновенный алерт администратору
+            await notify(f"⚠ **SIEM ALERT**: Обнаружен новый бан IP: `{ip}`")
         except Exception as e:
             await db.rollback()
-            print("DB Error:", e)
+            print("[-] Ошибка сохранения бана в БД:", e)
 
 
 async def unban_ip(ip: str):
     """
-    Разбанивает IP через fail2ban и обновляет БД
+    Разбанивает IP: меняет статус в БД и отправляет команду на хост через Named Pipe.
     """
     try:
         ipaddress.ip_address(ip)
     except ValueError:
-        return {"error": "Invalid IP"}
+        return {"error": "Invalid IP address format"}
 
     async with AsyncSessionLocal() as db:
-
         try:
+            # 1. Проверяем, есть ли активный бан в БД
             result = await db.execute(
                 select(Ban).filter(Ban.ip == ip, Ban.status == "banned")
             )
             ban = result.scalars().first()
 
             if not ban:
-                return {"error": "IP not found or already unbanned"}
+                return {"error": "IP not found in database or already unbanned"}
 
-            result = subprocess.run(
-                ["sudo", "fail2ban-client", "set", "sshd", "unbanip", ip],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            # 2. Пишем IP в именованный пайп для хоста (используем aiofiles для асинхронности)
+            if os.path.exists(PIPE_FILE):
+                async with aiofiles.open(PIPE_FILE, mode='w') as pipe:
+                    await pipe.write(f"{ip}\n")
+                print(f"[+] Команда unban для {ip} успешно отправлена в Named Pipe")
+            else:
+                return {"error": "SIEM Unban Pipe не найден. Проверьте настройки хоста."}
 
-            if result.returncode != 0:
-                return {"error": result.stderr or result.stdout or "fail2ban error"}
-
+            # 3. Обновляем статус в базе данных логов
             ban.status = "unbanned"
-            ban.unbanned_at = datetime.now(timezone.utc)
-
+            ban.unbanned_at = datetime.now()
             await db.commit()
+
             return {"status": "unbanned", "ip": ip}
 
         except Exception as e:
             await db.rollback()
+            print(f"[-] Ошибка при анбане IP {ip}: {e}")
             return {"error": str(e)}
-

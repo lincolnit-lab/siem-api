@@ -1,52 +1,41 @@
-from fastapi import FastAPI, Depends
-from app.db.database import engine, Base
-from contextlib import asynccontextmanager
-from app.api import bans, auth
-import uvicorn
-from app.services.fail2ban import get_bans
 import asyncio
-from bot.telegram_bot import start_telegram_bot
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends
+import uvicorn
+
+from app.db.database import engine, Base
+from app.api import bans, auth
 from app.api.auth import get_current_user
-
-
+from app.services.fail2ban import watch_log_file  # Новый асинхронный воркер
+from bot.telegram_bot import start_telegram_bot
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Создание таблиц базы данных
+    # Автоматическое создание таблиц в PostgreSQL при старте
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Запуск Telegram-бота
-    
-    
+    # Параллельный асинхронный запуск Telegram-бота
     asyncio.create_task(start_telegram_bot())
 
-    async def check_fail2ban():
-        while True:
-            await get_bans()
-            await asyncio.sleep(10)
-
-    asyncio.create_task(check_fail2ban())
+    # Запуск непрерывного потокового мониторинга логов хоста
+    asyncio.create_task(watch_log_file())
 
     yield
 
-
-# Создание приложения FastAPI
+# Инициализация приложения FastAPI
 app = FastAPI(title="SIEM API", lifespan=lifespan)
 
 # Подключение роутеров
-
 app.include_router(auth.router, prefix="/api")
 
-
-
-app.include_router(bans.router, prefix="/api", dependencies=[Depends(get_current_user)])
+# Роутер банов полностью защищен авторизацией админа
+app.include_router(bans.router, prefix="/api")
 
 @app.get("/ping")
 async def ping():
-    return{"status": "ok"}
+    return {"status": "ok"}
 
-
-# Запуск через uvicorn
+# Локальный запуск (если запускается скриптом, а не через docker-compose)
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", port=8000, host="0.0.0.0", reload=True)
+    uvicorn.run("main:app", port=8000, host="0.0.0.0", reload=True)

@@ -18,9 +18,8 @@ async def create_first_user():
 
         try:
             await session.commit()
-            print (f"Ebat kak '{username}' Yeah")
+            print (f" '{username}' Yeah")
 
-            session.add(new_user)
         except Exception as e:
             await session.rollback()
             print("Failed")
